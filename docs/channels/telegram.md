@@ -27,18 +27,19 @@ Status: production-ready for bot DMs + groups via grammY. Long polling is the de
   <Step title="Create the bot token in BotFather">
     Open Telegram and chat with **@BotFather** (confirm the handle is exactly `@BotFather`).
 
-    Run `/newbot`, follow prompts, and save the token.
+    Run `/newbot`, follow prompts, and save the token. Remember the **@username** you chose — that is the bot you will DM later.
 
   </Step>
 
-  <Step title="Configure token and DM policy">
+  <Step title="Add the bot token to OpenClaw config">
+    Edit your OpenClaw config and add a `telegram` section under `channels`. Config file location: **`~/.openclaw/openclaw.json`** or **`~/.openclaw/openclaw.yaml`** (or run `openclaw gateway --help` to see paths).
 
 ```json5
 {
   channels: {
     telegram: {
       enabled: true,
-      botToken: "123:abc",
+      botToken: "YOUR_BOT_TOKEN_HERE",
       dmPolicy: "pairing",
       groups: { "*": { requireMention: true } },
     },
@@ -51,19 +52,36 @@ Status: production-ready for bot DMs + groups via grammY. Long polling is the de
 
   </Step>
 
-  <Step title="Start gateway and approve first DM">
+  <Step title="Start or restart the gateway">
+    If the gateway is already installed as a service:
 
 ```bash
-openclaw gateway
+openclaw gateway restart
+```
+
+    Or run it in the foreground:
+
+```bash
+openclaw gateway run
+```
+
+  </Step>
+
+  <Step title="DM your bot and approve pairing">
+    **Which bot to DM?** The one you created in BotFather — the **@username** you chose when you ran `/newbot`. To find it: in Telegram search **@BotFather**, send **/mybots**; it lists all your bots and their usernames. DM that bot (send any message); it will reply with a pairing code.
+
+    Then approve the pairing on the machine running OpenClaw:
+
+```bash
 openclaw pairing list telegram
 openclaw pairing approve telegram <CODE>
 ```
 
-    Pairing codes expire after 1 hour.
+    Pairing codes expire after 1 hour. After approving, your Telegram DMs route to OpenClaw.
 
   </Step>
 
-  <Step title="Add the bot to a group">
+  <Step title="Add the bot to a group (optional)">
     Add the bot to your group, then set `channels.telegram.groups` and `groupPolicy` to match your access model.
   </Step>
 </Steps>
