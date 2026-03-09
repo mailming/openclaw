@@ -18,7 +18,7 @@ Already followed [Getting Started](/start/getting-started)? You're all set — t
 - `pnpm` only if you build from source
 
 <Note>
-On Windows, we strongly recommend running OpenClaw under [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install).
+On Windows, we strongly recommend running OpenClaw under [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install). For native Windows (PowerShell) setup and developer run from source, see [Windows setup and developer run](/platforms/windows-setup).
 </Note>
 
 ## Install methods

@@ -16,6 +16,8 @@ to install: `wsl --install`.
 
 Native Windows companion apps are planned.
 
+For **native Windows** (PowerShell) setup and **developer run/test** from a local clone, see [Windows setup and developer run](/platforms/windows-setup).
+
 ## Install (WSL2)
 
 - [Getting Started](/start/getting-started) (use inside WSL)
