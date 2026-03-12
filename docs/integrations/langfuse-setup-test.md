@@ -95,6 +95,7 @@ If nothing appears:
 | Issue | Check |
 |-------|--------|
 | No traces in Langfuse | `LANGFUSE_SECRET_KEY` set? Process restarted? `openclaw agent` completed without error? |
+| `[Langfuse SDK] TypeError: Cannot read properties of undefined (reading 'name')` | Caused by undefined in payload; OpenClaw sanitizes inputs. Update to a build that includes the fix; traces still record. |
 | "Pass --to, --session-id, or --agent" | Add e.g. `--session-id langfuse-test` to the `openclaw agent` command. |
 | Agent fails (no model) | Set a provider API key (e.g. `OPENAI_API_KEY`) and ensure a model is selected in config. |
 | Self-hosted not receiving | `LANGFUSE_BASE_URL` set to your instance (e.g. `http://localhost:3000`)? |

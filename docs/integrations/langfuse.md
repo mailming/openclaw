@@ -4,7 +4,98 @@
 
 **Quick path:** See [Langfuse setup and test guide](/integrations/langfuse-setup-test) for a concise setup and verification walkthrough.
 
-## Prerequisites
+---
+
+## Installation guide
+
+Follow these steps to install and enable Langfuse monitoring for OpenClaw.
+
+### Step 1: Install or access Langfuse
+
+Choose one:
+
+- **Option A – Self-hosted (Docker)**  
+  Run Langfuse on your machine:
+  ```bash
+  git clone https://github.com/langfuse/langfuse.git
+  cd langfuse
+  docker compose up -d
+  ```
+  Wait 1–2 minutes, then open **http://localhost:3000**.
+
+- **Option B – Langfuse Cloud**  
+  Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) and use the provided URL (e.g. `https://cloud.langfuse.com`).
+
+### Step 2: Create a project and API keys in Langfuse
+
+1. In the Langfuse UI, create or open a **Project**.
+2. Go to **Project Settings** → **API Keys**.
+3. Create an API key and copy the **Public Key** (`pk-lf-...`) and **Secret Key** (`sk-lf-...`).
+
+### Step 3: Install OpenClaw dependencies
+
+From the OpenClaw repo root:
+
+```bash
+cd /path/to/openclaw
+pnpm install
+```
+
+This installs the optional Langfuse-related packages used by the integration. For full OpenTelemetry span export you can optionally add:
+
+```bash
+pnpm add -w @langfuse/otel @opentelemetry/sdk-node
+```
+
+**Windows:** If you use Conda, activate your environment first, then run the same commands:
+
+```powershell
+conda activate openclaw
+pnpm install
+pnpm add -w @langfuse/otel @opentelemetry/sdk-node   # optional
+```
+
+### Step 4: Configure environment variables
+
+Set these so OpenClaw can send traces to Langfuse. Use a `.env` in the OpenClaw root or your config directory, or set them in your shell:
+
+```bash
+LANGFUSE_SECRET_KEY=sk-lf-...    # from Step 2
+LANGFUSE_PUBLIC_KEY=pk-lf-...    # from Step 2
+LANGFUSE_BASE_URL=http://localhost:3000   # only for self-hosted; omit for Cloud
+```
+
+For **Langfuse Cloud**, omit `LANGFUSE_BASE_URL` (or leave it unset).
+
+### Step 5: Build and run OpenClaw
+
+```bash
+pnpm build
+pnpm start
+# or, for gateway-only dev: pnpm gateway:dev
+```
+
+**Windows (gateway dev):**
+
+```powershell
+$env:OPENCLAW_SKIP_CHANNELS="1"; $env:CLAWDBOT_SKIP_CHANNELS="1"; node scripts/run-node.mjs --dev gateway
+```
+
+### Step 6: Verify
+
+Trigger an agent LLM call, for example:
+
+```bash
+openclaw agent --session-id langfuse-test --message "Say hello in one word"
+```
+
+Then open your Langfuse project → **Traces**. You should see a new trace with a **generation** (input, output, model, usage).
+
+If nothing appears, check that `LANGFUSE_SECRET_KEY` is set where the OpenClaw process runs and that the gateway/model and API keys are configured.
+
+---
+
+## Prerequisites (reference)
 
 - A Langfuse instance (e.g. [self-hosted with Docker](https://langfuse.com/self-hosting/local) or [Langfuse Cloud](https://cloud.langfuse.com))
 - OpenClaw project built (`pnpm build`)
