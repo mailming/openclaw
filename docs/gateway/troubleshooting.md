@@ -291,6 +291,24 @@ Related:
 - [/tools/chrome-extension](/tools/chrome-extension)
 - [/tools/browser](/tools/browser)
 
+## tools.profile allowlist contains unknown entries
+
+If logs show:
+
+`tools.profile (coding) allowlist contains unknown entries (apply_patch, cron). These entries won't match any tool unless the plugin is enabled.`
+
+Your config has a tool profile (e.g. `coding`) whose **allow** list includes tool names that are not core tools and no loaded plugin provides them (e.g. `apply_patch`, `cron`). Either:
+
+- **Remove** those names from the profile allowlist (e.g. in `tools.byProfile.coding.allow` or the profile referenced by `tools.profile`), or
+- **Enable the plugin** that provides those tools so they are registered.
+
+The warning is informational: core tools remain available; the unknown entries are ignored until a matching plugin is enabled.
+
+Related:
+
+- [/gateway/configuration-reference](/gateway/configuration-reference) (tools.profile, tools.byProfile)
+- [/tools/plugin](/tools/plugin)
+
 ## If you upgraded and something suddenly broke
 
 Most post-upgrade breakage is config drift or stricter defaults now being enforced.
