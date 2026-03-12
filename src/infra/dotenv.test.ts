@@ -96,4 +96,29 @@ describe("loadDotEnv", () => {
       });
     });
   });
+
+  it("loads OPENCLAW_DOTENV_PATH when set and file exists", async () => {
+    await withIsolatedEnvAndCwd(async () => {
+      const base = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-dotenv-explicit-"));
+      const explicitDir = path.join(base, "explicit");
+      const stateDir = path.join(base, "state");
+      await fs.mkdir(explicitDir, { recursive: true });
+      await fs.mkdir(stateDir, { recursive: true });
+      await writeEnvFile(path.join(explicitDir, ".env"), "FOO=from-explicit\nBAZ=from-explicit\n");
+
+      process.env.OPENCLAW_DOTENV_PATH = path.join(explicitDir, ".env");
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      process.chdir(base);
+      delete process.env.FOO;
+      delete process.env.BAZ;
+
+      loadDotEnv({ quiet: true });
+
+      expect(process.env.FOO).toBe("from-explicit");
+      expect(process.env.BAZ).toBe("from-explicit");
+
+      delete process.env.OPENCLAW_DOTENV_PATH;
+      delete process.env.OPENCLAW_STATE_DIR;
+    });
+  });
 });
