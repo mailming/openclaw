@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import path from "node:path";
 import os from "node:os";
 import type { AgentMessage, StreamFn } from "@mariozechner/pi-agent-core";
 import { streamSimple } from "@mariozechner/pi-ai";
@@ -538,6 +540,122 @@ function wrapStreamFnDecodeXaiToolCallArguments(baseFn: StreamFn): StreamFn {
   };
 }
 
+/**
+ * Rewrite assistant message text content that looks like a JSON function-call
+ * (i.e. `{"type":"function","name":"...","parameters":{...}}`) into plain text
+ * by extracting the longest string value from the parameters object.
+ * Also handles malformed JSON variants produced by some models by using a
+ * regex-based fallback to extract long string values from the parameters block.
+ * When parameters are empty the model produced a zero-argument call; in that
+ * case we synthesize a minimal response ("...") so the session history stays
+ * coherent (empty assistant messages confuse models on subsequent turns).
+ * This corrects output from models (e.g. Purdue llama3.3:70b) that
+ * wrap their responses in function-call JSON even when tools are disabled.
+ */
+function unwrapJsonFunctionCallText(text: string): string {
+  const trimmed = text.trim();
+  // Must look like a JSON object containing "function" type
+  if (!trimmed.startsWith("{")) {
+    return text;
+  }
+  if (!trimmed.includes('"function"') && !trimmed.includes("'function'")) {
+    return text;
+  }
+
+  // First try strict JSON parse
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>).type === "function"
+    ) {
+      const params = (parsed as Record<string, unknown>).parameters;
+      if (typeof params === "object" && params !== null) {
+        let best = "";
+        for (const val of Object.values(params as Record<string, unknown>)) {
+          if (typeof val === "string" && val.length > best.length) {
+            best = val;
+          }
+        }
+        if (best) {
+          return best;
+        }
+      }
+      // Empty parameters — return minimal placeholder
+      return "...";
+    }
+  } catch {
+    // Incomplete or invalid JSON (e.g. streaming partials). If this looks like
+    // the start of a function-call wrapper, hide it so the UI doesn't show
+    // raw JSON; the full message will be unwrapped when it arrives.
+    if (trimmed.includes('"function"') || trimmed.includes("'function'")) {
+      return "";
+    }
+  }
+
+  return text;
+}
+
+function rewriteJsonFunctionCallsInMessage(message: unknown): void {
+  if (!message || typeof message !== "object") return;
+  const msg = message as { content?: unknown[] };
+  if (!Array.isArray(msg.content)) return;
+  for (const block of msg.content) {
+    if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+      const b = block as { type: string; text: string };
+      b.text = unwrapJsonFunctionCallText(b.text);
+    }
+  }
+}
+
+function wrapStreamUnwrapJsonFunctionCalls(
+  stream: ReturnType<typeof streamSimple>,
+): ReturnType<typeof streamSimple> {
+  const originalResult = stream.result.bind(stream);
+  stream.result = async () => {
+    const message = await originalResult();
+    rewriteJsonFunctionCallsInMessage(message);
+    return message;
+  };
+
+  const originalAsyncIterator = stream[Symbol.asyncIterator].bind(stream);
+  (stream as { [Symbol.asyncIterator]: typeof originalAsyncIterator })[Symbol.asyncIterator] =
+    function () {
+      const iterator = originalAsyncIterator();
+      return {
+        async next() {
+          const result = await iterator.next();
+          if (!result.done && result.value && typeof result.value === "object") {
+            const event = result.value as { partial?: unknown; message?: unknown };
+            rewriteJsonFunctionCallsInMessage(event.partial);
+            rewriteJsonFunctionCallsInMessage(event.message);
+          }
+          return result;
+        },
+        async return(value?: unknown) {
+          return iterator.return?.(value) ?? { done: true as const, value: undefined };
+        },
+        async throw(error?: unknown) {
+          return iterator.throw?.(error) ?? { done: true as const, value: undefined };
+        },
+      };
+    };
+  return stream;
+}
+
+function wrapStreamFnUnwrapJsonFunctionCalls(baseFn: StreamFn): StreamFn {
+  return (model, context, options) => {
+    const maybeStream = baseFn(model, context, options);
+    if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
+      return Promise.resolve(maybeStream).then((stream) =>
+        wrapStreamUnwrapJsonFunctionCalls(stream),
+      );
+    }
+    return wrapStreamUnwrapJsonFunctionCalls(maybeStream);
+  };
+}
+
 export async function resolvePromptBuildHookResult(params: {
   prompt: string;
   messages: unknown[];
@@ -986,7 +1104,28 @@ export async function runEmbeddedAttempt(
       },
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
-    const promptMode = resolvePromptModeForSession(params.sessionKey);
+    // Read promptMode and compat flags from models.json directly so per-agent overrides
+    // take effect. The model registry strips unknown compat fields (e.g. promptMode)
+    // during parsing, so we read the raw file instead.
+    type RawModelEntry = { id?: string; compat?: { promptMode?: string; supportsTools?: boolean } };
+    let rawModelEntry: RawModelEntry | undefined;
+    try {
+      const modelsJsonPath = path.join(agentDir, "models.json");
+      const rawModelsJson = JSON.parse(fsSync.readFileSync(modelsJsonPath, "utf8"));
+      const providerModels: unknown[] =
+        (rawModelsJson as { providers?: Record<string, { models?: unknown[] }> })
+          ?.providers?.[params.provider]?.models ?? [];
+      rawModelEntry = providerModels.find(
+        (m) => (m as RawModelEntry)?.id === params.modelId,
+      ) as RawModelEntry | undefined;
+    } catch {
+      // models.json missing or unreadable — use defaults
+    }
+    const rawPm = rawModelEntry?.compat?.promptMode;
+    const promptMode =
+      rawPm === "full" || rawPm === "minimal" || rawPm === "none"
+        ? rawPm
+        : resolvePromptModeForSession(params.sessionKey);
     const docsPath = await resolveOpenClawDocsPath({
       workspaceDir: effectiveWorkspace,
       argv1: process.argv[1],
@@ -1385,6 +1524,14 @@ export async function runEmbeddedAttempt(
 
       if (isXaiProvider(params.provider, params.modelId)) {
         activeSession.agent.streamFn = wrapStreamFnDecodeXaiToolCallArguments(
+          activeSession.agent.streamFn,
+        );
+      }
+
+      // Models with supportsTools:false may still output JSON function-call wrappers.
+      // Unwrap them so the user sees the actual text content.
+      if (rawModelEntry?.compat?.supportsTools === false) {
+        activeSession.agent.streamFn = wrapStreamFnUnwrapJsonFunctionCalls(
           activeSession.agent.streamFn,
         );
       }

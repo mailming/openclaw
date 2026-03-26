@@ -199,6 +199,7 @@ export const ModelCompatSchema = z
     requiresThinkingAsText: z.boolean().optional(),
     requiresMistralToolIds: z.boolean().optional(),
     requiresOpenAiAnthropicToolPayload: z.boolean().optional(),
+    promptMode: z.enum(["full", "minimal", "none"]).optional(),
   })
   .strict()
   .optional();

@@ -414,9 +414,17 @@ export function buildAgentSystemPrompt(params: {
   });
   const workspaceNotes = (params.workspaceNotes ?? []).map((note) => note.trim()).filter(Boolean);
 
-  // For "none" mode, return just the basic identity line
+  // For "none" mode, return a minimal prompt that explicitly disables function-call output.
+  // Some models (e.g. llama3.3:70b) default to wrapping every response in JSON function-call
+  // syntax even when no tools are provided. The explicit instruction below suppresses that.
   if (promptMode === "none") {
-    return "You are a personal assistant running inside OpenClaw.";
+    return [
+      "You are a personal assistant running inside OpenClaw.",
+      "",
+      "IMPORTANT: Do NOT use function-call syntax or JSON wrappers in your responses.",
+      "Reply only with plain, natural language text.",
+      "Never output JSON objects, function calls, or structured data as your response.",
+    ].join("\n");
   }
 
   const lines = [

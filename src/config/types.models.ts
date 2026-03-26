@@ -27,6 +27,8 @@ export type ModelCompatConfig = {
   requiresThinkingAsText?: boolean;
   requiresMistralToolIds?: boolean;
   requiresOpenAiAnthropicToolPayload?: boolean;
+  /** Override system prompt verbosity for models that misinterpret the full prompt. */
+  promptMode?: "full" | "minimal" | "none";
 };
 
 export type ModelProviderAuthMode = "api-key" | "aws-sdk" | "oauth" | "token";
