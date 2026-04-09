@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { resolvePromptModelCue } from "../../agents/prompt-model-selection.js";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
@@ -86,6 +87,56 @@ function buildResetSessionNoticeText(params: {
   return modelLabel === defaultLabel
     ? `✅ New session started · model: ${modelLabel}`
     : `✅ New session started · model: ${modelLabel} (default: ${defaultLabel})`;
+}
+
+export function applyPromptCueOverrideForAutoReply(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  promptSource: string;
+  prefixedCommandBody: string;
+  provider: string;
+  model: string;
+  requiresImage: boolean;
+}): {
+  prefixedCommandBody: string;
+  provider: string;
+  model: string;
+} {
+  const cue = resolvePromptModelCue({
+    cfg: params.cfg,
+    prompt: params.promptSource,
+    defaultProvider: params.provider,
+    defaultModel: params.model,
+    agentId: params.agentId,
+    requiresImage: params.requiresImage,
+  });
+  if (cue.kind === "none") {
+    return {
+      prefixedCommandBody: params.prefixedCommandBody,
+      provider: params.provider,
+      model: params.model,
+    };
+  }
+
+  let rewrittenBody = params.prefixedCommandBody;
+  const trimmedPromptSource = params.promptSource.trim();
+  if (trimmedPromptSource && rewrittenBody.includes(trimmedPromptSource)) {
+    rewrittenBody = rewrittenBody.replace(trimmedPromptSource, cue.prompt);
+  } else if (params.promptSource && rewrittenBody.includes(params.promptSource)) {
+    rewrittenBody = rewrittenBody.replace(params.promptSource, cue.prompt);
+  } else if (cue.rawCue && rewrittenBody.includes(cue.rawCue)) {
+    rewrittenBody = rewrittenBody
+      .replace(cue.rawCue, "")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  return {
+    prefixedCommandBody: rewrittenBody,
+    provider: cue.ref.provider,
+    model: cue.ref.model,
+  };
 }
 
 function resolveResetSessionNoticeRoute(params: {
@@ -223,8 +274,6 @@ export async function runPreparedReply(
     blockReplyChunking,
     resolvedBlockStreamingBreak,
     modelState,
-    provider,
-    model,
     perMessageQueueMode,
     perMessageQueueOptions,
     typing,
@@ -249,6 +298,8 @@ export async function runPreparedReply(
     resolvedElevatedLevel,
     execOverrides,
     abortedLastRun,
+    provider,
+    model,
   } = params;
   let currentSystemSent = systemSent;
 
@@ -422,6 +473,22 @@ export async function runPreparedReply(
   let prefixedCommandBody = mediaNote
     ? [mediaNote, mediaReplyHint, prefixedBody ?? ""].filter(Boolean).join("\n").trim()
     : prefixedBody;
+  const promptCueSource =
+    sessionCtx.BodyForCommands ?? sessionCtx.CommandBody ?? sessionCtx.RawBody ?? "";
+  if (promptCueSource) {
+    const promptCueOverride = applyPromptCueOverrideForAutoReply({
+      cfg,
+      agentId,
+      promptSource: promptCueSource,
+      prefixedCommandBody,
+      provider,
+      model,
+      requiresImage: hasMediaAttachment,
+    });
+    prefixedCommandBody = promptCueOverride.prefixedCommandBody;
+    provider = promptCueOverride.provider;
+    model = promptCueOverride.model;
+  }
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();
   }

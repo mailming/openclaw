@@ -1,0 +1,139 @@
+{
+  "env": {
+    "shellEnv": {
+      "enabled": true,
+      "timeoutMs": 15000
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "purdue-studio": {
+        "baseUrl": "https://genai.rcac.purdue.edu/api",
+        "apiKey": "${PURDUE_GENAI_STUDIO_API_KEY}",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "authHeader": true,
+        "models": [
+          {
+            "id": "llama4:latest",
+            "name": "Purdue Llama Model",
+            "api": "openai-completions",
+            "reasoning": true,
+            "compat": {
+              "supportsTools": false
+            },
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 2,
+              "output": 2,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "gpt-oss:120b",
+            "name": "Purdue Default Model",
+            "api": "openai-completions",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 1,
+              "output": 1,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "qwen2.5:72b",
+            "name": "Purdue Qwen Model",
+            "api": "openai-completions",
+            "reasoning": true,
+            "compat": {
+              "supportsTools": false
+            },
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 1.4,
+              "output": 1.4,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "purdue-studio/gpt-oss:120b",
+        "fallbacks": [
+          "purdue-studio/llama4:latest"
+        ]
+      },
+      "models": {
+        "purdue-studio/llama4:latest": {
+          "alias": "purdue-primary",
+          "streaming": false
+        },
+        "purdue-studio/gpt-oss:120b": {
+          "alias": "purdue-fallback",
+          "streaming": false
+        },
+        "purdue-studio/qwen2.5:72b": {
+          "alias": "purdue-third",
+          "streaming": false
+        }
+      },
+      "workspace": "./workspace-purdue"
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "groups": {
+        "*": {
+          "requireMention": true
+        }
+      },
+      "groupPolicy": "allowlist",
+      "streaming": "off",
+      "responsePrefix": "[{model}] "
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "756a5f973e31ef5c9cb1a2927041a515f55a8d45975173f5"
+    }
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.3.25",
+    "lastTouchedAt": "2026-04-08T15:58:47.263Z"
+  }
+}

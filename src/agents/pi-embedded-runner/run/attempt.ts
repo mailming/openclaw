@@ -157,6 +157,7 @@ import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
+import { recoverSilentResponseHistory } from "./history-recovery.js";
 import { pruneProcessedHistoryImages } from "./history-image-prune.js";
 import { detectAndLoadPromptImages } from "./images.js";
 import { shouldInjectHeartbeatPromptForTrigger } from "./trigger-policy.js";
@@ -2474,9 +2475,18 @@ export async function runEmbeddedAttempt(
         const limited = transcriptPolicy.repairToolUseResultPairing
           ? sanitizeToolUseResultPairing(truncated)
           : truncated;
+        const recovered =
+          params.recoverSilentResponseHistory === true
+            ? recoverSilentResponseHistory(limited)
+            : limited;
         cacheTrace?.recordStage("session:limited", { messages: limited });
-        if (limited.length > 0) {
-          activeSession.agent.replaceMessages(limited);
+        if (recovered !== limited) {
+          log.warn(
+            `[empty-assistant-retry] rebuilt replay history for ${params.provider}/${params.modelId} from ${limited.length} to ${recovered.length} meaningful turns`,
+          );
+        }
+        if (recovered.length > 0) {
+          activeSession.agent.replaceMessages(recovered);
         }
 
         if (params.contextEngine) {

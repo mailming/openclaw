@@ -43,7 +43,9 @@ import {
   type ResolvedProviderAuth,
   resolveAuthProfileOrder,
 } from "../model-auth.js";
+import { supportsModelTools } from "../model-tool-support.js";
 import { normalizeProviderId } from "../model-selection.js";
+import { resolvePromptModelCue } from "../prompt-model-selection.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
   classifyFailoverReason,
@@ -77,6 +79,7 @@ import { runEmbeddedAttempt } from "./run/attempt.js";
 import { createFailoverDecisionLogger } from "./run/failover-observation.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
+import { shouldDisableToolsForAttempt } from "./run/tool-disable.js";
 import {
   sessionLikelyHasOversizedToolResults,
   truncateOversizedToolResultsInSession,
@@ -210,6 +213,59 @@ function buildErrorAgentMeta(params: {
   };
 }
 
+function assistantMessageHasToolCalls(message: { content?: unknown } | undefined): boolean {
+  if (!Array.isArray(message?.content)) {
+    return false;
+  }
+  return message.content.some(
+    (block) => block && typeof block === "object" && "type" in block && block.type === "toolCall",
+  );
+}
+
+function assistantMessageHasVisibleText(message: { content?: unknown } | undefined): boolean {
+  const content = message?.content;
+  if (typeof content === "string") {
+    return content.trim().length > 0;
+  }
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.some(
+    (block) =>
+      block &&
+      typeof block === "object" &&
+      "type" in block &&
+      block.type === "text" &&
+      typeof block.text === "string" &&
+      block.text.trim().length > 0,
+  );
+}
+
+function isSilentSuccessfulAttempt(attempt: {
+  assistantTexts: string[];
+  promptError: unknown;
+  lastAssistant?: { stopReason?: string; content?: unknown } | null;
+  didSendViaMessagingTool?: boolean;
+  didSendDeterministicApprovalPrompt?: boolean;
+}): boolean {
+  if (attempt.promptError) {
+    return false;
+  }
+  if (attempt.assistantTexts.length > 0) {
+    return false;
+  }
+  if (attempt.didSendViaMessagingTool || attempt.didSendDeterministicApprovalPrompt) {
+    return false;
+  }
+  if (!attempt.lastAssistant || attempt.lastAssistant.stopReason !== "stop") {
+    return false;
+  }
+  if (assistantMessageHasToolCalls(attempt.lastAssistant)) {
+    return false;
+  }
+  return !assistantMessageHasVisibleText(attempt.lastAssistant);
+}
+
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
@@ -263,6 +319,16 @@ export async function runEmbeddedPiAgent(
       });
       await ensureOpenClawModelsJson(params.config, agentDir);
 
+      const promptCue = resolvePromptModelCue({
+        cfg: params.config,
+        prompt: params.prompt,
+        defaultProvider: provider,
+        defaultModel: modelId,
+        agentId: workspaceResolution.agentId,
+        requiresImage: (params.images?.length ?? 0) > 0,
+      });
+      const resolvedPrompt = promptCue.prompt;
+
       // Run before_model_resolve hooks early so plugins can override the
       // provider/model before resolveModel().
       //
@@ -283,7 +349,7 @@ export async function runEmbeddedPiAgent(
       if (hookRunner?.hasHooks("before_model_resolve")) {
         try {
           modelResolveOverride = await hookRunner.runBeforeModelResolve(
-            { prompt: params.prompt },
+            { prompt: resolvedPrompt },
             hookCtx,
           );
         } catch (hookErr) {
@@ -293,7 +359,7 @@ export async function runEmbeddedPiAgent(
       if (hookRunner?.hasHooks("before_agent_start")) {
         try {
           legacyBeforeAgentStartResult = await hookRunner.runBeforeAgentStart(
-            { prompt: params.prompt },
+            { prompt: resolvedPrompt },
             hookCtx,
           );
           modelResolveOverride = {
@@ -316,6 +382,17 @@ export async function runEmbeddedPiAgent(
       if (modelResolveOverride?.modelOverride) {
         modelId = modelResolveOverride.modelOverride;
         log.info(`[hooks] model overridden to ${modelId}`);
+      }
+      if (promptCue.kind === "explicit" || promptCue.kind === "auto") {
+        provider = promptCue.ref.provider;
+        modelId = promptCue.ref.model;
+        if (promptCue.kind === "auto") {
+          log.info(
+            `[prompt-model-cue] ${promptCue.rawCue} selected ${provider}/${modelId} complexity=${promptCue.complexity} score=${promptCue.complexityScore}`,
+          );
+        } else {
+          log.info(`[prompt-model-cue] ${promptCue.rawCue} selected ${provider}/${modelId}`);
+        }
       }
 
       const { model, error, authStorage, modelRegistry } = await resolveModelAsync(
@@ -346,6 +423,10 @@ export async function runEmbeddedPiAgent(
         ctxInfo.tokens < (runtimeModel.contextWindow ?? Infinity)
           ? { ...runtimeModel, contextWindow: ctxInfo.tokens }
           : runtimeModel;
+      const modelDisablesTools = !supportsModelTools(effectiveModel);
+      if (modelDisablesTools) {
+        log.info(`[model-tools] disabling tools for ${provider}/${modelId} (compat.supportsTools=false)`);
+      }
       const ctxGuard = evaluateContextWindowGuard({
         info: ctxInfo,
         warnBelowTokens: CONTEXT_WINDOW_WARN_BELOW_TOKENS,
@@ -883,6 +964,10 @@ export async function runEmbeddedPiAgent(
           }
         };
         let authRetryPending = false;
+        let emptyAssistantRetryUsed = false;
+        let disableToolsForEmptyAssistantRetry = false;
+        let recoverHistoryForEmptyAssistantRetry = false;
+        let emptyAssistantRetryExhausted = false;
         // Hoisted so the retry-limit error path can use the most recent API total.
         let lastTurnTotal: number | undefined;
         while (true) {
@@ -925,7 +1010,15 @@ export async function runEmbeddedPiAgent(
           await fs.mkdir(resolvedWorkspace, { recursive: true });
 
           const prompt =
-            provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+            provider === "anthropic"
+              ? scrubAnthropicRefusalMagic(resolvedPrompt)
+              : resolvedPrompt;
+
+          params.onModelSelected?.({
+            provider,
+            model: modelId,
+            thinkLevel,
+          });
 
           const attempt = await runEmbeddedAttempt({
             sessionId: params.sessionId,
@@ -962,7 +1055,12 @@ export async function runEmbeddedPiAgent(
             prompt,
             images: params.images,
             clientTools: params.clientTools,
-            disableTools: params.disableTools,
+            disableTools: shouldDisableToolsForAttempt({
+              requestedDisableTools: params.disableTools,
+              retryDisableTools: disableToolsForEmptyAssistantRetry,
+              model: effectiveModel,
+            }),
+            recoverSilentResponseHistory: recoverHistoryForEmptyAssistantRetry,
             provider,
             modelId,
             model: applyLocalNoAuthHeaderOverride(effectiveModel, apiKeyInfo),
@@ -1048,6 +1146,22 @@ export async function runEmbeddedPiAgent(
             lastAssistant?.stopReason === "error"
               ? lastAssistant.errorMessage?.trim() || formattedAssistantErrorText
               : undefined;
+
+          if (isSilentSuccessfulAttempt(attempt)) {
+            if (!emptyAssistantRetryUsed) {
+              emptyAssistantRetryUsed = true;
+              disableToolsForEmptyAssistantRetry = true;
+              recoverHistoryForEmptyAssistantRetry = true;
+              log.warn(
+                `[empty-assistant-retry] provider=${provider}/${modelId} returned an empty successful turn; retrying once with tools disabled and recovered history`,
+              );
+              continue;
+            }
+            log.warn(
+              `[empty-assistant-retry] provider=${provider}/${modelId} still returned an empty successful turn after retry`,
+            );
+            emptyAssistantRetryExhausted = true;
+          }
 
           // ── Timeout-triggered compaction ──────────────────────────────────
           // When the LLM times out with high context usage, compact before
@@ -1696,6 +1810,36 @@ export async function runEmbeddedPiAgent(
             didSendViaMessagingTool: attempt.didSendViaMessagingTool,
             didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
           });
+
+          if (emptyAssistantRetryExhausted && payloads.length === 0) {
+            return {
+              payloads: [
+                {
+                  text:
+                    `Model ${provider}/${modelId} returned an empty response twice. ` +
+                    "This often indicates provider-side rate limiting or a poisoned session transcript. " +
+                    "Wait a minute, start a fresh session, or choose a different model with an explicit @model cue.",
+                  isError: true,
+                },
+              ],
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta,
+                aborted,
+                systemPromptReport: attempt.systemPromptReport,
+                stopReason: "stop",
+                error: {
+                  kind: "empty_response",
+                  message: `Model ${provider}/${modelId} returned an empty response.`,
+                },
+              },
+              didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+              didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
+              messagingToolSentTexts: attempt.messagingToolSentTexts,
+              messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
+              messagingToolSentTargets: attempt.messagingToolSentTargets,
+            };
+          }
 
           // Timeout aborts can leave the run without any assistant payloads.
           // Emit an explicit timeout error instead of silently completing, so
