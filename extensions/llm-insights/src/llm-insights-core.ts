@@ -3,7 +3,7 @@ import {
   DEFAULT_PROVIDER,
   loadGatewayModelCatalog,
 } from "openclaw/plugin-sdk/gateway-model-catalog";
-import { parseDateRange } from "openclaw/plugin-sdk/gateway-usage-date-range";
+import { DAY_MS, parseDateRange } from "openclaw/plugin-sdk/gateway-usage-date-range";
 import {
   modelKey,
   normalizeModelRef,
@@ -51,6 +51,31 @@ export type LlmInsightsPayload =
   | { ok: false; error: string };
 
 const MODEL_COST_PANEL_LIMIT = 80;
+
+/** Matches `llm_insights_overview` tool and HTTP `?limit=` max. */
+const SESSIONS_REPORT_MAX_LIMIT = 500;
+
+/**
+ * `loadCostUsageSummary` scans all transcripts in range, but `buildSessionsUsageReport` only
+ * aggregates up to `limit` sessions (by recency). Scale the default limit with window length so
+ * "top models" tracks the selected range instead of sticking to the same newest ~50 sessions.
+ */
+function resolveSessionsReportLimit(
+  params: InsightParams,
+  startMs: number,
+  endMs: number,
+  options: { defaultLimit?: number },
+): number {
+  if (params.limit !== undefined) {
+    return Math.min(SESSIONS_REPORT_MAX_LIMIT, Math.max(1, Math.floor(params.limit)));
+  }
+  const baseDefault = options.defaultLimit ?? 50;
+  const spanDays = Math.max(1, Math.floor((endMs - startMs) / DAY_MS) + 1);
+  return Math.min(
+    SESSIONS_REPORT_MAX_LIMIT,
+    Math.max(baseDefault, spanDays * 6),
+  );
+}
 
 function buildModelCostRows(
   cfg: OpenClawPluginApi["config"],
@@ -109,7 +134,9 @@ export async function buildLlmInsightsPayload(
     id: m.id,
   }));
 
-  const limit = params.limit ?? options.defaultLimit ?? 50;
+  const limit = resolveSessionsReportLimit(params, startMs, endMs, {
+    defaultLimit: options.defaultLimit,
+  });
 
   const [costSummary, providerUsage, sessionsReport] = await Promise.all([
     loadCostUsageSummary({ startMs, endMs, config: cfg }),

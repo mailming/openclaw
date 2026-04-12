@@ -117,6 +117,12 @@ export function createLlmInsightsHttpHandler(params: {
 
     const gatewayOriginJson = JSON.stringify(resolveGatewayOrigin(req));
 
+    const qDays = q.days?.trim() ?? "";
+    const qStart = q.startDate?.trim() ?? "";
+    const qEnd = q.endDate?.trim() ?? "";
+    const qLimit = q.limit?.trim() ?? "";
+    const qKey = q.key?.trim() ?? "";
+
     const costPanelRows = data.modelCostRows
       .map((row) => {
         const o = row.override;
@@ -146,11 +152,38 @@ export function createLlmInsightsHttpHandler(params: {
     .kpis { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
     .kpi { border: 1px solid #ddd; padding: 0.75rem 1rem; border-radius: 6px; min-width: 8rem; }
     input[type="number"] { width: 6.5rem; }
+    input[type="date"] { font: inherit; }
+    .llm-range-panel { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; max-width: 56rem; margin: 1rem 0; }
+    .llm-presets { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+    .llm-range-form { display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: flex-end; }
+    .llm-range-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; }
+    button.llm-preset { padding: 0.35rem 0.65rem; font: inherit; cursor: pointer; border: 1px solid #bbb; background: #fafafa; border-radius: 4px; }
+    button.llm-preset:hover { background: #eee; }
   </style>
 </head>
 <body>
   <h1>LLM Insights</h1>
   <p class="muted">Range: <strong>${escapeHtml(data.dateRange.startDate)}</strong> → <strong>${escapeHtml(data.dateRange.endDate)}</strong> · Models: <strong>${data.models.count}</strong> · Sessions in view: <strong>${data.sessionsUsage.sessionCount}</strong></p>
+  <div class="llm-range-panel">
+    <h2 style="font-size:1rem;margin:0 0 0.5rem 0">Time window</h2>
+    <p class="muted" style="margin:0 0 0.5rem 0">Presets use a rolling <strong>days</strong> window (today backward). For a fixed calendar range, set start and end dates (YYYY-MM-DD) and leave <strong>Days</strong> empty. If <strong>Session limit</strong> is empty, it scales with the window (up to 500) so model totals match the range.</p>
+    <div class="llm-presets">
+      <span class="muted">Presets:</span>
+      <button type="button" class="llm-preset" data-llm-days="7">7 days</button>
+      <button type="button" class="llm-preset" data-llm-days="14">14 days</button>
+      <button type="button" class="llm-preset" data-llm-days="30">30 days</button>
+      <button type="button" class="llm-preset" data-llm-days="90">90 days</button>
+      <button type="button" class="llm-preset" id="llm-range-reset" title="Clear days and dates (use gateway default window)">Default range</button>
+    </div>
+    <form id="llm-range-form" class="llm-range-form" action="#" method="get">
+      <label>Days <input id="llm-inp-days" name="days" type="number" min="1" max="365" placeholder="e.g. 30" value="${escapeHtml(qDays)}"></label>
+      <label>Start <input id="llm-inp-start" name="startDate" type="date" value="${escapeHtml(qStart)}"></label>
+      <label>End <input id="llm-inp-end" name="endDate" type="date" value="${escapeHtml(qEnd)}"></label>
+      <label>Session limit <input id="llm-inp-limit" name="limit" type="number" min="1" max="500" placeholder="auto" value="${escapeHtml(qLimit)}"></label>
+      <label>Session key <input id="llm-inp-key" name="key" type="text" placeholder="optional" style="min-width:12rem" value="${escapeHtml(qKey)}"></label>
+      <button type="submit" style="padding:0.4rem 0.75rem;font:inherit;cursor:pointer">Apply</button>
+    </form>
+  </div>
   <p class="muted">For interactive charts and filters, open the Control UI <strong>Usage</strong> tab (<code>/usage</code>) after <code>openclaw dashboard</code>.</p>
   <div class="kpis">
     <div class="kpi">Total cost (est.)<br><strong>$${escapeHtml(data.sessionsUsage.totals.totalCost.toFixed(4))}</strong></div>
@@ -168,11 +201,26 @@ export function createLlmInsightsHttpHandler(params: {
   <h2>Provider quotas (where available)</h2>
   <p class="muted">Figures come from each provider&rsquo;s usage or quota API when credentials are configured. They are not recomputed from manual <code>models.usageCostOverrides</code> (those apply to transcript-based estimates above).</p>
   <table><thead><tr><th>Provider</th><th>Plan</th><th>Usage / note</th></tr></thead><tbody>${provRows || "<tr><td colspan=3>No provider usage data</td></tr>"}</tbody></table>
-  <h2>Query</h2>
-  <p class="muted">Adjust <code>?days=</code>, <code>?limit=</code>, <code>?key=</code> (session key), <code>startDate=</code>/<code>endDate=</code> (YYYY-MM-DD).</p>
+  <p class="muted">You can also bookmark or share this page; query parameters match the tool: <code>days</code>, <code>startDate</code>/<code>endDate</code>, <code>limit</code>, <code>key</code>.</p>
   <script>
 (function(){
   var __OC_GATEWAY_ORIGIN__ = ${gatewayOriginJson};
+  function llmInsightsNavigate(updates) {
+    var cur = new URLSearchParams(window.location.search);
+    Object.keys(updates).forEach(function (k) {
+      var v = updates[k];
+      if (v === null || v === undefined || v === "") {
+        cur.delete(k);
+      } else {
+        cur.set(k, String(v));
+      }
+    });
+    var qs = cur.toString();
+    var path = "/plugins/llm-insights" + (qs ? "?" + qs : "");
+    window.location.href = window.location.protocol === "blob:"
+      ? new URL(path, __OC_GATEWAY_ORIGIN__).href
+      : path;
+  }
   function costOverridesPostUrl() {
     return window.location.protocol === "blob:"
       ? new URL("/plugins/llm-insights-cost-overrides", __OC_GATEWAY_ORIGIN__).href
@@ -197,6 +245,54 @@ export function createLlmInsightsHttpHandler(params: {
       window.history.replaceState(null, "", clean);
     }
   })();
+  var rangeForm = document.getElementById("llm-range-form");
+  if (rangeForm) {
+    rangeForm.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var daysEl = document.getElementById("llm-inp-days");
+      var sEl = document.getElementById("llm-inp-start");
+      var eEl = document.getElementById("llm-inp-end");
+      var lEl = document.getElementById("llm-inp-limit");
+      var kEl = document.getElementById("llm-inp-key");
+      function val(el) {
+        return el && "value" in el ? String(el.value || "").trim() : "";
+      }
+      var sd = val(sEl);
+      var ed = val(eEl);
+      var d = val(daysEl);
+      var lim = val(lEl);
+      var ky = val(kEl);
+      if ((sd && !ed) || (!sd && ed)) {
+        alert("Set both start and end date, or clear both to use Days.");
+        return;
+      }
+      var upd = {};
+      if (sd && ed) {
+        upd.startDate = sd;
+        upd.endDate = ed;
+        upd.days = null;
+      } else {
+        upd.startDate = null;
+        upd.endDate = null;
+        upd.days = d || null;
+      }
+      upd.limit = lim || null;
+      upd.key = ky || null;
+      llmInsightsNavigate(upd);
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".llm-preset[data-llm-days]"), function (btn) {
+    btn.addEventListener("click", function () {
+      var d = btn.getAttribute("data-llm-days");
+      llmInsightsNavigate({ days: d || "", startDate: null, endDate: null });
+    });
+  });
+  var resetBtn = document.getElementById("llm-range-reset");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", function () {
+      llmInsightsNavigate({ days: null, startDate: null, endDate: null });
+    });
+  }
   const btn = document.getElementById("llm-cost-save");
   const status = document.getElementById("llm-cost-status");
   const tokenEl = document.getElementById("gw-bearer");

@@ -18,6 +18,7 @@ vi.mock("openclaw/plugin-sdk/gateway-model-catalog", () => ({
 }));
 
 vi.mock("openclaw/plugin-sdk/gateway-usage-date-range", () => ({
+  DAY_MS: 24 * 60 * 60 * 1000,
   parseDateRange: vi.fn(() => ({ startMs: 0, endMs: 1 })),
 }));
 
