@@ -431,6 +431,7 @@ export async function runAgentTurnWithFallback(params: {
                       }
                     : undefined,
                 onReasoningEnd: params.opts?.onReasoningEnd,
+                onModelSelected: params.opts?.onModelSelected,
                 onAgentEvent: async (evt) => {
                   // Signal run start only after the embedded agent emits real activity.
                   const hasLifecyclePhase =
