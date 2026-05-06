@@ -1288,6 +1288,20 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
                     additionalProperties: false,
                   },
                 },
+                quota: {
+                  type: "object",
+                  properties: {
+                    dailyCostUsd: {
+                      type: "number",
+                      minimum: 0,
+                    },
+                    monthlyCostUsd: {
+                      type: "number",
+                      minimum: 0,
+                    },
+                  },
+                  additionalProperties: false,
+                },
               },
               required: ["baseUrl", "models"],
               additionalProperties: false,
@@ -1325,6 +1339,31 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
               },
             },
             additionalProperties: false,
+          },
+          usageCostOverrides: {
+            type: "object",
+            propertyNames: {
+              type: "string",
+            },
+            additionalProperties: {
+              type: "object",
+              properties: {
+                input: {
+                  type: "number",
+                },
+                output: {
+                  type: "number",
+                },
+                cacheRead: {
+                  type: "number",
+                },
+                cacheWrite: {
+                  type: "number",
+                },
+              },
+              required: ["input", "output", "cacheRead", "cacheWrite"],
+              additionalProperties: false,
+            },
           },
         },
         additionalProperties: false,
@@ -13894,6 +13933,21 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
       help: "Declared model list for a provider including identifiers, metadata, and optional compatibility/cost hints. Keep IDs exact to provider catalog values so selection and fallback resolve correctly.",
       tags: ["models"],
     },
+    "models.providers.*.quota": {
+      label: "Model Provider Cost Quota",
+      help: "Optional cost budget for this provider. When daily or 30-day spend (estimated from local transcripts) meets the limit, @auto routing skips this provider and falls back to the next cheapest available option.",
+      tags: ["models"],
+    },
+    "models.providers.*.quota.dailyCostUsd": {
+      label: "Daily Cost Limit (USD)",
+      help: "Maximum estimated cost (USD) allowed in a rolling 24-hour window. Exceeding this causes @auto routing to skip the provider for new sessions.",
+      tags: ["models"],
+    },
+    "models.providers.*.quota.monthlyCostUsd": {
+      label: "30-Day Cost Limit (USD)",
+      help: "Maximum estimated cost (USD) allowed in a rolling 30-day window. Exceeding this causes @auto routing to skip the provider for new sessions.",
+      tags: ["models"],
+    },
     "models.bedrockDiscovery": {
       label: "Bedrock Model Discovery",
       help: "Automatic AWS Bedrock model discovery settings used to synthesize provider model entries from account visibility. Keep discovery scoped and refresh intervals conservative to reduce API churn.",
@@ -13928,6 +13982,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
       label: "Bedrock Default Max Tokens",
       help: "Fallback max-token value applied to discovered models without explicit output token limits. Use conservative defaults to reduce truncation surprises and unexpected token spend.",
       tags: ["security", "auth", "performance", "models"],
+    },
+    "models.usageCostOverrides": {
+      label: "Usage Cost Overrides (per model)",
+      help: "Manual per-model token pricing in USD per million tokens (input, output, cache read, cache write). Keys use the normalized provider/model form used internally (see `modelKey`). These overrides take highest priority over agent models.json, provider model definitions, and the gateway pricing cache for session usage cost and estimate rollups.",
+      tags: ["models"],
     },
     "auth.cooldowns.billingBackoffHours": {
       label: "Billing Backoff (hours)",

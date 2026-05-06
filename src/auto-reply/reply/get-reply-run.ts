@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
+import { normalizeProviderId } from "../../agents/model-selection.js";
 import { resolvePromptModelCue } from "../../agents/prompt-model-selection.js";
+import { loadProviderCostUsed } from "../../infra/session-cost-usage.js";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
@@ -89,6 +91,32 @@ function buildResetSessionNoticeText(params: {
     : `✅ New session started · model: ${modelLabel} (default: ${defaultLabel})`;
 }
 
+export async function resolveOverQuotaProviders(cfg: OpenClawConfig): Promise<Set<string>> {
+  const providers = cfg.models?.providers;
+  if (!providers || typeof providers !== "object") return new Set();
+  const quotaEntries = Object.entries(providers).filter(
+    ([, p]) => p.quota?.dailyCostUsd || p.quota?.monthlyCostUsd,
+  );
+  if (quotaEntries.length === 0) return new Set();
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const MONTH_MS = 30 * DAY_MS;
+  const [dailyMap, monthlyMap] = await Promise.all([
+    loadProviderCostUsed({ startMs: now - DAY_MS, endMs: now, config: cfg }),
+    loadProviderCostUsed({ startMs: now - MONTH_MS, endMs: now, config: cfg }),
+  ]);
+  const exceeded = new Set<string>();
+  for (const [rawId, providerCfg] of quotaEntries) {
+    const id = normalizeProviderId(rawId) ?? rawId.toLowerCase().trim();
+    if (providerCfg.quota?.dailyCostUsd && (dailyMap.get(id) ?? 0) >= providerCfg.quota.dailyCostUsd) {
+      exceeded.add(id);
+    } else if (providerCfg.quota?.monthlyCostUsd && (monthlyMap.get(id) ?? 0) >= providerCfg.quota.monthlyCostUsd) {
+      exceeded.add(id);
+    }
+  }
+  return exceeded;
+}
+
 export function applyPromptCueOverrideForAutoReply(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -97,10 +125,13 @@ export function applyPromptCueOverrideForAutoReply(params: {
   provider: string;
   model: string;
   requiresImage: boolean;
+  overQuotaProviders?: Set<string>;
 }): {
   prefixedCommandBody: string;
   provider: string;
   model: string;
+  cueKind: "none" | "explicit" | "auto";
+  cueComplexity?: "simple" | "complex";
 } {
   const cue = resolvePromptModelCue({
     cfg: params.cfg,
@@ -109,12 +140,14 @@ export function applyPromptCueOverrideForAutoReply(params: {
     defaultModel: params.model,
     agentId: params.agentId,
     requiresImage: params.requiresImage,
+    overQuotaProviders: params.overQuotaProviders,
   });
   if (cue.kind === "none") {
     return {
       prefixedCommandBody: params.prefixedCommandBody,
       provider: params.provider,
       model: params.model,
+      cueKind: "none",
     };
   }
 
@@ -136,6 +169,8 @@ export function applyPromptCueOverrideForAutoReply(params: {
     prefixedCommandBody: rewrittenBody,
     provider: cue.ref.provider,
     model: cue.ref.model,
+    cueKind: cue.kind,
+    cueComplexity: cue.kind === "auto" ? cue.complexity : undefined,
   };
 }
 
@@ -476,6 +511,7 @@ export async function runPreparedReply(
   const promptCueSource =
     sessionCtx.BodyForCommands ?? sessionCtx.CommandBody ?? sessionCtx.RawBody ?? "";
   if (promptCueSource) {
+    const overQuotaProviders = await resolveOverQuotaProviders(cfg);
     const promptCueOverride = applyPromptCueOverrideForAutoReply({
       cfg,
       agentId,
@@ -484,10 +520,15 @@ export async function runPreparedReply(
       provider,
       model,
       requiresImage: hasMediaAttachment,
+      overQuotaProviders,
     });
     prefixedCommandBody = promptCueOverride.prefixedCommandBody;
     provider = promptCueOverride.provider;
     model = promptCueOverride.model;
+    if (sessionEntry) {
+      sessionEntry.promptCueKind = promptCueOverride.cueKind;
+      sessionEntry.promptCueComplexity = promptCueOverride.cueComplexity;
+    }
   }
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();

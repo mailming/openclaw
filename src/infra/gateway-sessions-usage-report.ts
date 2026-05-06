@@ -432,6 +432,8 @@ export async function buildSessionsUsageReport(params: {
       providerOverride: merged.storeEntry?.providerOverride,
       modelProvider: merged.storeEntry?.modelProvider,
       model: merged.storeEntry?.model,
+      promptCueKind: merged.storeEntry?.promptCueKind,
+      promptCueComplexity: merged.storeEntry?.promptCueComplexity,
       usage,
       contextWeight: includeContextWeight
         ? (merged.storeEntry?.systemPromptReport ?? null)

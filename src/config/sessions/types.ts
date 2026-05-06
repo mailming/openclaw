@@ -153,6 +153,8 @@ export type SessionEntry = {
   cacheWrite?: number;
   modelProvider?: string;
   model?: string;
+  promptCueKind?: "none" | "explicit" | "auto";
+  promptCueComplexity?: "simple" | "complex";
   /**
    * Last selected/runtime model pair for which a fallback notice was emitted.
    * Used to avoid repeating the same fallback notice every turn.

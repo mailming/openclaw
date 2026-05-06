@@ -114,3 +114,14 @@ Notes
 - Docs supports export/cat/copy. In-place edits require a Docs API client (not in gog).
 - Confirm before sending mail or creating events.
 - `gog gmail search` returns one row per thread; use `gog gmail messages search` when you need every individual email returned separately.
+
+Gmail Message Management
+
+- **There is NO `gog gmail messages delete` command** — it does not exist and will error.
+- Trash a message: `gog gmail messages modify <messageId> --add TRASH --account you@gmail.com`
+- Move to inbox: `gog gmail messages modify <messageId> --add INBOX --remove TRASH --account you@gmail.com`
+- Mark as read: `gog gmail messages modify <messageId> --remove UNREAD --account you@gmail.com`
+- Mark as unread: `gog gmail messages modify <messageId> --add UNREAD --account you@gmail.com`
+- Archive (remove inbox): `gog gmail messages modify <messageId> --remove INBOX --account you@gmail.com`
+- Add label: `gog gmail messages modify <messageId> --add <labelName> --account you@gmail.com`
+- Remove label: `gog gmail messages modify <messageId> --remove <labelName> --account you@gmail.com`

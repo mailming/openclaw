@@ -1,3 +1,4 @@
+import { isDeliverableMessageChannel, normalizeMessageChannel } from "../utils/message-channel.js";
 import { callGatewayTool } from "./tools/gateway.js";
 
 type ExecApprovalFollowupParams = {
@@ -33,7 +34,12 @@ export async function sendExecApprovalFollowup(
     return false;
   }
 
-  const channel = params.turnSourceChannel?.trim();
+  const rawChannel = params.turnSourceChannel?.trim();
+  const normalizedChannel = rawChannel ? normalizeMessageChannel(rawChannel) : undefined;
+  const channel =
+    normalizedChannel && isDeliverableMessageChannel(normalizedChannel)
+      ? normalizedChannel
+      : undefined;
   const to = params.turnSourceTo?.trim();
   const threadId =
     params.turnSourceThreadId != null && params.turnSourceThreadId !== ""

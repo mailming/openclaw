@@ -49,6 +49,7 @@ import {
   buildEmbeddedRunExecutionParams,
   resolveModelFallbackOptions,
 } from "./agent-runner-utils.js";
+import { resolveOverQuotaProviders } from "./get-reply-run.js";
 import { type BlockReplyPipeline } from "./block-reply-pipeline.js";
 import type { FollowupRun } from "./queue.js";
 import { createBlockReplyDeliveryHandler } from "./reply-delivery.js";
@@ -254,9 +255,13 @@ export async function runAgentTurnWithFallback(params: {
           })
         : undefined;
       const onToolResult = params.opts?.onToolResult;
+      const overQuotaProviders = params.followupRun.run.config
+        ? await resolveOverQuotaProviders(params.followupRun.run.config)
+        : undefined;
       const fallbackResult = await runWithModelFallback({
         ...resolveModelFallbackOptions(params.followupRun.run),
         runId,
+        overQuotaProviders,
         run: (provider, model, runOptions) => {
           // Notify that model selection is complete (including after fallback).
           // This allows responsePrefix template interpolation with the actual model.

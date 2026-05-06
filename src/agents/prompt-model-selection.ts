@@ -136,6 +136,7 @@ function buildAutoModelCandidates(params: {
   defaultModel: string;
   agentId?: string;
   requiresImage: boolean;
+  overQuotaProviders?: Set<string>;
 }): AutoModelCandidate[] {
   const providers = params.cfg.models?.providers;
   if (!providers || typeof providers !== "object") {
@@ -169,6 +170,9 @@ function buildAutoModelCandidates(params: {
       if (params.requiresImage && !model.input?.includes("image")) {
         continue;
       }
+      if (params.overQuotaProviders?.has(providerId)) {
+        continue;
+      }
       candidates.push({
         key,
         ref: { provider: providerId, model: modelId },
@@ -194,13 +198,14 @@ function resolveAutoModelCue(params: {
   agentId?: string;
   requiresImage: boolean;
   rawCue: string;
+  overQuotaProviders?: Set<string>;
 }): PromptModelCueResolution {
   const defaultRef = resolveDefaultModelForAgent({
     cfg: params.cfg,
     agentId: params.agentId,
   });
   const defaultKey = modelKey(defaultRef.provider, defaultRef.model);
-  const candidates = buildAutoModelCandidates(params);
+  const candidates = buildAutoModelCandidates({ ...params, overQuotaProviders: params.overQuotaProviders });
   const complexityScore = scorePromptComplexity(params.prompt);
   const complexity = classifyPromptComplexity(complexityScore);
   const defaultCandidate = candidates.find((candidate) => candidate.key === defaultKey);
@@ -239,6 +244,7 @@ export function resolvePromptModelCue(params: {
   defaultModel: string;
   agentId?: string;
   requiresImage?: boolean;
+  overQuotaProviders?: Set<string>;
 }): PromptModelCueResolution {
   const cue = extractLeadingPromptCue(params.prompt);
   if (!cue) {
@@ -258,6 +264,7 @@ export function resolvePromptModelCue(params: {
       agentId: params.agentId,
       requiresImage: params.requiresImage === true,
       rawCue: cue.rawCue,
+      overQuotaProviders: params.overQuotaProviders,
     });
   }
 

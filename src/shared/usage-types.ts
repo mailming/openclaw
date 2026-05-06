@@ -32,6 +32,8 @@ export type SessionUsageEntry = {
   providerOverride?: string;
   modelProvider?: string;
   model?: string;
+  promptCueKind?: "none" | "explicit" | "auto";
+  promptCueComplexity?: "simple" | "complex";
   usage: SessionCostSummary | null;
   contextWeight?: SessionSystemPromptReport | null;
 };

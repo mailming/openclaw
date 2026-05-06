@@ -258,6 +258,13 @@ export const ModelProviderSchema = z
     headers: z.record(z.string(), SecretInputSchema.register(sensitive)).optional(),
     authHeader: z.boolean().optional(),
     models: z.array(ModelDefinitionSchema),
+    quota: z
+      .object({
+        dailyCostUsd: z.number().finite().nonnegative().optional(),
+        monthlyCostUsd: z.number().finite().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

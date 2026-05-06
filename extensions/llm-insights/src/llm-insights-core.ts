@@ -3,7 +3,7 @@ import {
   DEFAULT_PROVIDER,
   loadGatewayModelCatalog,
 } from "openclaw/plugin-sdk/gateway-model-catalog";
-import { DAY_MS, parseDateRange } from "openclaw/plugin-sdk/gateway-usage-date-range";
+import { DAY_MS, getTodayStartMs, parseDateRange } from "openclaw/plugin-sdk/gateway-usage-date-range";
 import {
   modelKey,
   normalizeModelRef,
@@ -11,9 +11,10 @@ import {
   type ModelCostConfig,
 } from "openclaw/plugin-sdk/model-cost";
 import { loadProviderUsageSummary } from "openclaw/plugin-sdk/provider-usage";
+import type { ProviderUsageSnapshot } from "openclaw/plugin-sdk/provider-usage";
 import { buildSessionsUsageReport } from "openclaw/plugin-sdk/sessions-usage-report";
 import type { SessionsUsageResult } from "openclaw/plugin-sdk/sessions-usage-report";
-import { loadCostUsageSummary } from "openclaw/plugin-sdk/usage-cost";
+import { loadCostUsageSummary, loadProviderCostUsed } from "openclaw/plugin-sdk/usage-cost";
 import type { OpenClawPluginApi } from "../api.js";
 
 export type InsightParams = {
@@ -46,6 +47,14 @@ export type LlmInsightsPayload =
           autoCost?: ModelCostConfig;
           override?: ModelCostConfig;
         }>;
+        /** Aggregate counts of how sessions reached their model (default, explicit @cue, or @auto routing). */
+        modelRouting: {
+          total: number;
+          byKind: Array<{ kind: "none" | "explicit" | "auto"; count: number }>;
+          autoByComplexity: Array<{ complexity: "simple" | "complex"; count: number }>;
+        };
+        /** Current quota config per provider (raw config key → quota values). Used to pre-fill the quota editor. */
+        providerQuotaConfig: Record<string, { dailyCostUsd?: number; monthlyCostUsd?: number }>;
       };
     }
   | { ok: false; error: string };
@@ -108,6 +117,101 @@ function buildModelCostRows(
   });
 }
 
+function buildModelRoutingStats(sessions: SessionsUsageResult["sessions"]): {
+  total: number;
+  byKind: Array<{ kind: "none" | "explicit" | "auto"; count: number }>;
+  autoByComplexity: Array<{ complexity: "simple" | "complex"; count: number }>;
+} {
+  const kindCounts = new Map<"none" | "explicit" | "auto", number>();
+  const complexityCounts = new Map<"simple" | "complex", number>();
+  for (const s of sessions) {
+    const kind: "none" | "explicit" | "auto" = s.promptCueKind ?? "none";
+    kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1);
+    if (kind === "auto" && s.promptCueComplexity) {
+      complexityCounts.set(
+        s.promptCueComplexity,
+        (complexityCounts.get(s.promptCueComplexity) ?? 0) + 1,
+      );
+    }
+  }
+  return {
+    total: sessions.length,
+    byKind: (["none", "explicit", "auto"] as const)
+      .filter((k) => kindCounts.has(k))
+      .map((kind) => ({ kind, count: kindCounts.get(kind) ?? 0 })),
+    autoByComplexity: (["simple", "complex"] as const)
+      .filter((c) => complexityCounts.has(c))
+      .map((complexity) => ({ complexity, count: complexityCounts.get(complexity) ?? 0 })),
+  };
+}
+
+async function buildManualQuotaSnapshots(
+  cfg: OpenClawPluginApi["config"],
+): Promise<ProviderUsageSnapshot[]> {
+  const providers = cfg.models?.providers;
+  if (!providers || typeof providers !== "object") return [];
+  const providerEntries = Object.entries(providers);
+  if (providerEntries.length === 0) return [];
+
+  const now = Date.now();
+  const todayStartMs = getTodayStartMs(new Date(now), { mode: "gateway" });
+  const MONTH_MS = 30 * DAY_MS;
+  const [dailyMap, monthlyMap] = await Promise.all([
+    loadProviderCostUsed({ startMs: todayStartMs, endMs: now, config: cfg }),
+    loadProviderCostUsed({ startMs: now - MONTH_MS, endMs: now, config: cfg }),
+  ]);
+
+  const fmtUsd = (v: number) => `$${v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`;
+
+  const snapshots: ProviderUsageSnapshot[] = [];
+  for (const [rawId, providerCfg] of providerEntries) {
+    const id = rawId.toLowerCase().trim();
+    const dailyCost = dailyMap.get(id) ?? 0;
+    const monthlyCost = monthlyMap.get(id) ?? 0;
+    const windows = [];
+
+    if (providerCfg.quota?.dailyCostUsd) {
+      windows.push({
+        label: `Daily (${fmtUsd(dailyCost)} / ${fmtUsd(providerCfg.quota.dailyCostUsd)})`,
+        usedPercent: Math.min(100, Math.round((dailyCost / providerCfg.quota.dailyCostUsd) * 100)),
+      });
+    } else if (dailyCost > 0) {
+      windows.push({ label: `Today: ${fmtUsd(dailyCost)}`, usedPercent: 0 });
+    }
+
+    if (providerCfg.quota?.monthlyCostUsd) {
+      windows.push({
+        label: `30-day (${fmtUsd(monthlyCost)} / ${fmtUsd(providerCfg.quota.monthlyCostUsd)})`,
+        usedPercent: Math.min(100, Math.round((monthlyCost / providerCfg.quota.monthlyCostUsd) * 100)),
+      });
+    } else if (monthlyCost > 0 && !providerCfg.quota?.dailyCostUsd) {
+      windows.push({ label: `30-day: ${fmtUsd(monthlyCost)}`, usedPercent: 0 });
+    }
+
+    snapshots.push({
+      provider: id as ProviderUsageSnapshot["provider"],
+      displayName: rawId,
+      windows,
+    });
+  }
+  return snapshots;
+}
+
+function buildProviderQuotaConfig(
+  cfg: OpenClawPluginApi["config"],
+): Record<string, { dailyCostUsd?: number; monthlyCostUsd?: number }> {
+  const out: Record<string, { dailyCostUsd?: number; monthlyCostUsd?: number }> = {};
+  const providers = cfg.models?.providers;
+  if (!providers || typeof providers !== "object") return out;
+  for (const [rawId, providerCfg] of Object.entries(providers)) {
+    out[rawId] = {
+      dailyCostUsd: providerCfg.quota?.dailyCostUsd,
+      monthlyCostUsd: providerCfg.quota?.monthlyCostUsd,
+    };
+  }
+  return out;
+}
+
 export async function buildLlmInsightsPayload(
   api: OpenClawPluginApi,
   params: InsightParams,
@@ -138,7 +242,7 @@ export async function buildLlmInsightsPayload(
     defaultLimit: options.defaultLimit,
   });
 
-  const [costSummary, providerUsage, sessionsReport] = await Promise.all([
+  const [costSummary, providerUsage, sessionsReport, manualQuotaSnapshots] = await Promise.all([
     loadCostUsageSummary({ startMs, endMs, config: cfg }),
     loadProviderUsageSummary({ config: cfg }),
     buildSessionsUsageReport({
@@ -149,6 +253,7 @@ export async function buildLlmInsightsPayload(
       includeContextWeight: false,
       specificKey: params.key?.trim() ? params.key.trim() : null,
     }),
+    buildManualQuotaSnapshots(cfg),
   ]);
 
   if (!sessionsReport.ok) {
@@ -167,7 +272,15 @@ export async function buildLlmInsightsPayload(
         items: models.slice(0, 500),
       },
       costSummary,
-      providerUsage,
+      providerUsage: {
+        ...providerUsage,
+        providers: [
+          ...manualQuotaSnapshots,
+          ...providerUsage.providers.filter(
+            (p) => !manualQuotaSnapshots.some((m) => m.provider === p.provider),
+          ),
+        ],
+      },
       sessionsUsage: {
         totals: sessionsReport.result.totals,
         aggregates: sessionsReport.result.aggregates,
@@ -175,6 +288,8 @@ export async function buildLlmInsightsPayload(
         sessionKeys: sessionsReport.result.sessions.slice(0, 20).map((s) => s.key),
       },
       modelCostRows: buildModelCostRows(cfg, models),
+      modelRouting: buildModelRoutingStats(sessionsReport.result.sessions),
+      providerQuotaConfig: buildProviderQuotaConfig(cfg),
     },
   };
 }

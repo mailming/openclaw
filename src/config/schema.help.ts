@@ -721,6 +721,12 @@ export const FIELD_HELP: Record<string, string> = {
     "When true, credentials are sent via the HTTP Authorization header even if alternate auth is possible. Use this only when your provider or proxy explicitly requires Authorization forwarding.",
   "models.providers.*.models":
     "Declared model list for a provider including identifiers, metadata, and optional compatibility/cost hints. Keep IDs exact to provider catalog values so selection and fallback resolve correctly.",
+  "models.providers.*.quota":
+    "Optional cost budget for this provider. When daily or 30-day spend (estimated from local transcripts) meets the limit, @auto routing skips this provider and falls back to the next cheapest available option.",
+  "models.providers.*.quota.dailyCostUsd":
+    "Maximum estimated cost (USD) allowed in a rolling 24-hour window. Exceeding this causes @auto routing to skip the provider for new sessions.",
+  "models.providers.*.quota.monthlyCostUsd":
+    "Maximum estimated cost (USD) allowed in a rolling 30-day window. Exceeding this causes @auto routing to skip the provider for new sessions.",
   "models.bedrockDiscovery":
     "Automatic AWS Bedrock model discovery settings used to synthesize provider model entries from account visibility. Keep discovery scoped and refresh intervals conservative to reduce API churn.",
   "models.bedrockDiscovery.enabled":

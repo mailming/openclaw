@@ -335,6 +335,41 @@ function extractOllamaTools(tools: Tool[] | undefined): OllamaTool[] {
 
 // ── Response conversion ─────────────────────────────────────────────────────
 
+/**
+ * Fallback: some ollama models (e.g. MoE variants with few active params) output
+ * tool calls as plain text JSON instead of using the structured `tool_calls` field.
+ * Pattern: {"type":"function","name":"<tool>","parameters":{...}}
+ * When the entire response is such a JSON and no native tool_calls were received,
+ * we lift the text into a proper toolCall entry so the agent loop can execute it.
+ */
+function tryParseTextToolCall(
+  text: string,
+): { name: string; arguments: Record<string, unknown> } | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>).type === "function" &&
+      typeof (parsed as Record<string, unknown>).name === "string" &&
+      typeof (parsed as Record<string, unknown>).parameters === "object" &&
+      (parsed as Record<string, unknown>).parameters !== null
+    ) {
+      return {
+        name: (parsed as Record<string, unknown>).name as string,
+        arguments: (parsed as Record<string, unknown>).parameters as Record<string, unknown>,
+      };
+    }
+  } catch {
+    // not parseable JSON
+  }
+  return null;
+}
+
 export function buildAssistantMessage(
   response: OllamaChatResponse,
   modelInfo: { api: string; provider: string; id: string },
@@ -344,9 +379,6 @@ export function buildAssistantMessage(
   // Native Ollama reasoning fields are internal model output. The reply text
   // must come from `content`; reasoning visibility is controlled elsewhere.
   const text = response.message.content || "";
-  if (text) {
-    content.push({ type: "text", text });
-  }
 
   const toolCalls = response.message.tool_calls;
   if (toolCalls && toolCalls.length > 0) {
@@ -358,9 +390,23 @@ export function buildAssistantMessage(
         arguments: tc.function.arguments,
       });
     }
+  } else if (text) {
+    // No native tool_calls — check if the entire text content is a text-based
+    // tool call (fallback for models that don't emit structured tool_calls).
+    const textToolCall = tryParseTextToolCall(text);
+    if (textToolCall) {
+      content.push({
+        type: "toolCall",
+        id: `ollama_call_${randomUUID()}`,
+        name: textToolCall.name,
+        arguments: textToolCall.arguments,
+      });
+    } else {
+      content.push({ type: "text", text });
+    }
   }
 
-  const hasToolCalls = toolCalls && toolCalls.length > 0;
+  const hasToolCalls = content.some((c) => c.type === "toolCall");
   const stopReason: StopReason = hasToolCalls ? "toolUse" : "stop";
 
   return buildStreamAssistantMessage({

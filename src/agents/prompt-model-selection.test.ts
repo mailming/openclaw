@@ -171,4 +171,74 @@ describe("resolvePromptModelCue", () => {
       prompt: "@darby please review this",
     });
   });
+
+  it("skips over-quota providers when routing @auto to cheapest model", () => {
+    const result = resolvePromptModelCue({
+      cfg: buildConfig(),
+      prompt: "@auto summarize this",
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.4",
+      overQuotaProviders: new Set(["openai"]),
+    });
+    // Both models are from openai, which is over quota — falls back to defaultRef.
+    expect(result.kind).toBe("auto");
+    if (result.kind === "auto") {
+      expect(result.ref.provider).toBe("openai");
+    }
+  });
+
+  it("routes @auto to a non-quota provider when the default provider is over quota", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.4", fallbacks: [] },
+          models: {},
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            api: "openai-responses" as never,
+            models: [
+              {
+                id: "gpt-5.4",
+                reasoning: true,
+                input: ["text"],
+                cost: { input: 10, output: 30, cacheRead: 1, cacheWrite: 1 },
+                contextWindow: 200000,
+              },
+            ],
+          },
+          local: {
+            baseUrl: "http://localhost:11434/v1",
+            api: "openai-responses" as never,
+            models: [
+              {
+                id: "llama3",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8000,
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    const result = resolvePromptModelCue({
+      cfg,
+      prompt: "@auto quick question",
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.4",
+      overQuotaProviders: new Set(["openai"]),
+    });
+
+    expect(result.kind).toBe("auto");
+    if (result.kind === "auto") {
+      expect(result.ref.provider).toBe("local");
+      expect(result.ref.model).toBe("llama3");
+    }
+  });
 });

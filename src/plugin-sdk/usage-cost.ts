@@ -5,4 +5,4 @@ export type {
   CostUsageSummary,
   CostUsageTotals,
 } from "../infra/session-cost-usage.types.js";
-export { loadCostUsageSummary } from "../infra/session-cost-usage.js";
+export { loadCostUsageSummary, loadProviderCostUsed } from "../infra/session-cost-usage.js";

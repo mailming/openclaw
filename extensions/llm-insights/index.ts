@@ -1,6 +1,7 @@
 import { definePluginEntry, type AnyAgentTool, type OpenClawPluginApi } from "./api.js";
 import { createLlmInsightsCostOverridesPostHandler } from "./src/llm-insights-cost-overrides.js";
 import { createLlmInsightsHttpHandler } from "./src/llm-insights-http.js";
+import { createLlmInsightsQuotasPostHandler } from "./src/llm-insights-quotas.js";
 import { createLlmInsightsOverviewTool } from "./src/llm-insights-tool.js";
 
 export default definePluginEntry({
@@ -21,11 +22,16 @@ export default definePluginEntry({
     // and registration fails when auth differs (see `doPluginHttpRoutesOverlap`).
     api.registerHttpRoute({
       path: "/plugins/llm-insights-cost-overrides",
-      // Plugin auth: handler enforces gateway Bearer for remote; loopback can save without
-      // pasting the token (same machine as the gateway, same exposure as GET).
       auth: "plugin",
       match: "exact",
       handler: createLlmInsightsCostOverridesPostHandler(api),
+    });
+
+    api.registerHttpRoute({
+      path: "/plugins/llm-insights-quotas",
+      auth: "plugin",
+      match: "exact",
+      handler: createLlmInsightsQuotasPostHandler(api),
     });
 
     api.registerHttpRoute({

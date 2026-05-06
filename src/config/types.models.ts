@@ -71,6 +71,11 @@ export type ModelProviderConfig = {
   headers?: Record<string, SecretInput>;
   authHeader?: boolean;
   models: ModelDefinitionConfig[];
+  /** Manual cost budget (USD) for this provider. When reached, @auto routing skips this provider. */
+  quota?: {
+    dailyCostUsd?: number;
+    monthlyCostUsd?: number;
+  };
 };
 
 export type BedrockDiscoveryConfig = {

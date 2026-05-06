@@ -32,11 +32,13 @@ import {
   buildModelAliasIndex,
   modelKey,
   normalizeModelRef,
+  normalizeProviderId,
   resolveConfiguredModelRef,
   resolveModelRefFromString,
 } from "./model-selection.js";
 import type { FailoverReason } from "./pi-embedded-helpers.js";
 import { isLikelyContextOverflowError } from "./pi-embedded-helpers.js";
+import { resolveModelCostConfig } from "../utils/usage-format.js";
 
 const log = createSubsystemLogger("model-fallback");
 
@@ -584,6 +586,48 @@ function resolveCooldownDecision(params: {
   };
 }
 
+function injectFreeAlternativesForOverQuotaProviders(
+  candidates: ModelCandidate[],
+  overQuotaProviders: ReadonlySet<string> | undefined,
+  cfg: OpenClawConfig | undefined,
+): ModelCandidate[] {
+  if (!overQuotaProviders?.size || !cfg) return candidates;
+
+  const seen = new Set(candidates.map((c) => modelKey(c.provider, c.model)));
+  const injections: ModelCandidate[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (!overQuotaProviders.has(c.provider)) continue;
+    const cost = resolveModelCostConfig({ provider: c.provider, model: c.model, config: cfg });
+    const isNonFree = cost && (cost.input > 0 || cost.output > 0 || cost.cacheRead > 0 || cost.cacheWrite > 0);
+    if (!isNonFree) continue;
+
+    // Find zero-cost alternatives from the same provider's catalog entry.
+    const providerEntry = Object.entries(cfg.models?.providers ?? {}).find(
+      ([k]) => (normalizeProviderId(k) ?? k.toLowerCase().trim()) === c.provider,
+    );
+    for (const m of providerEntry?.[1]?.models ?? []) {
+      const key = modelKey(c.provider, m.id);
+      if (seen.has(key)) continue;
+      const mCost = resolveModelCostConfig({ provider: c.provider, model: m.id, config: cfg });
+      const isFree =
+        !mCost ||
+        (mCost.input === 0 && mCost.output === 0 && mCost.cacheRead === 0 && mCost.cacheWrite === 0);
+      if (isFree) {
+        injections.push({ provider: c.provider, model: m.id });
+        seen.add(key);
+      }
+    }
+  }
+
+  if (injections.length === 0) return candidates;
+
+  // Append injections at the end so explicitly-configured fallbacks take priority
+  // over catalog-discovered free models.
+  return [...candidates, ...injections];
+}
+
 export async function runWithModelFallback<T>(params: {
   cfg: OpenClawConfig | undefined;
   provider: string;
@@ -592,15 +636,27 @@ export async function runWithModelFallback<T>(params: {
   agentDir?: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
+  /** Providers whose cost quota has been exceeded; candidates on these providers are skipped unless the model has zero cost. */
+  overQuotaProviders?: ReadonlySet<string>;
   run: ModelFallbackRunFn<T>;
   onError?: ModelFallbackErrorHandler;
 }): Promise<ModelFallbackRunResult<T>> {
-  const candidates = resolveFallbackCandidates({
+  const baseCandidates = resolveFallbackCandidates({
     cfg: params.cfg,
     provider: params.provider,
     model: params.model,
     fallbacksOverride: params.fallbacksOverride,
   });
+
+  // Automatically inject zero-cost models from over-quota providers that aren't
+  // already in the configured fallback list. This lets the system switch to free
+  // alternatives without requiring explicit fallback configuration.
+  const candidates = injectFreeAlternativesForOverQuotaProviders(
+    baseCandidates,
+    params.overQuotaProviders,
+    params.cfg,
+  );
+
   const authStore = params.cfg
     ? ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false })
     : null;
@@ -615,6 +671,39 @@ export async function runWithModelFallback<T>(params: {
     const isPrimary = i === 0;
     const requestedModel =
       params.provider === candidate.provider && params.model === candidate.model;
+
+    if (params.overQuotaProviders?.has(candidate.provider)) {
+      const costCfg = resolveModelCostConfig({
+        provider: candidate.provider,
+        model: candidate.model,
+        config: params.cfg,
+      });
+      const isFreeCost =
+        !costCfg ||
+        (costCfg.input === 0 && costCfg.output === 0 && costCfg.cacheRead === 0 && costCfg.cacheWrite === 0);
+      if (!isFreeCost) {
+        const reason = "quota";
+        const error = `Provider ${candidate.provider} has exceeded its cost quota`;
+        attempts.push({ provider: candidate.provider, model: candidate.model, error, reason });
+        logModelFallbackDecision({
+          decision: "skip_candidate",
+          runId: params.runId,
+          requestedProvider: params.provider,
+          requestedModel: params.model,
+          candidate,
+          attempt: i + 1,
+          total: candidates.length,
+          reason,
+          error,
+          nextCandidate: candidates[i + 1],
+          isPrimary,
+          requestedModelMatched: requestedModel,
+          fallbackConfigured: hasFallbackCandidates,
+        });
+        continue;
+      }
+    }
+
     let runOptions: ModelFallbackRunOptions | undefined;
     let attemptedDuringCooldown = false;
     let transientProbeProviderForAttempt: string | null = null;

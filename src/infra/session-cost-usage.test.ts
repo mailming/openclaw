@@ -7,6 +7,7 @@ import { withEnvAsync } from "../test-utils/env.js";
 import {
   discoverAllSessions,
   loadCostUsageSummary,
+  loadProviderCostUsed,
   loadSessionCostSummary,
   loadSessionLogs,
   loadSessionUsageTimeSeries,
@@ -807,5 +808,117 @@ example
     expect(totalCost).toBeCloseTo(0.055, 8);
     expect(lastPoint?.cumulativeTokens).toBe(165);
     expect(lastPoint?.cumulativeCost).toBeCloseTo(0.055, 8);
+  });
+});
+
+describe("loadProviderCostUsed", () => {
+  const withStateDir = async <T>(stateDir: string, fn: () => Promise<T>): Promise<T> =>
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, fn);
+
+  it("accumulates cost by provider from transcript files", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-prov-cost-"));
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const now = new Date();
+    const entries = [
+      {
+        type: "message",
+        timestamp: now.toISOString(),
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: { input: 10, output: 10, totalTokens: 20, cost: { total: 0.05 } },
+        },
+      },
+      {
+        type: "message",
+        timestamp: now.toISOString(),
+        message: {
+          role: "assistant",
+          provider: "anthropic",
+          model: "claude-3",
+          usage: { input: 5, output: 5, totalTokens: 10, cost: { total: 0.02 } },
+        },
+      },
+      {
+        type: "message",
+        timestamp: now.toISOString(),
+        message: {
+          role: "assistant",
+          provider: "Openai",
+          model: "gpt-5.4-mini",
+          usage: { input: 2, output: 2, totalTokens: 4, cost: { total: 0.01 } },
+        },
+      },
+    ];
+
+    await fs.writeFile(
+      path.join(sessionsDir, "sess-prov.jsonl"),
+      entries.map((e) => JSON.stringify(e)).join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const map = await loadProviderCostUsed({
+        startMs: Date.now() - 60_000,
+        endMs: Date.now() + 60_000,
+      });
+      expect(map.get("openai")).toBeCloseTo(0.06, 5);
+      expect(map.get("anthropic")).toBeCloseTo(0.02, 5);
+    });
+  });
+
+  it("returns an empty map when no sessions directory exists", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-prov-empty-"));
+    await withStateDir(root, async () => {
+      const map = await loadProviderCostUsed();
+      expect(map.size).toBe(0);
+    });
+  });
+
+  it("excludes entries outside the requested time window", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-prov-window-"));
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+
+    await fs.writeFile(
+      path.join(sessionsDir, "sess-window.jsonl"),
+      [
+        JSON.stringify({
+          type: "message",
+          timestamp: recent,
+          message: {
+            role: "assistant",
+            provider: "openai",
+            model: "gpt-5.4",
+            usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0.10 } },
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: old,
+          message: {
+            role: "assistant",
+            provider: "openai",
+            model: "gpt-5.4",
+            usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0.99 } },
+          },
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const map = await loadProviderCostUsed({
+        startMs: Date.now() - 5 * 60_000,
+        endMs: Date.now(),
+      });
+      expect(map.get("openai")).toBeCloseTo(0.10, 5);
+    });
   });
 });

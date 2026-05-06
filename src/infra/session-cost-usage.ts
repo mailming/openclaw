@@ -246,24 +246,88 @@ async function* readJsonlRecords(filePath: string): AsyncGenerator<Record<string
   }
 }
 
+function estimateTokensFromContent(content: unknown): number {
+  if (typeof content === "string") {
+    return Math.ceil(content.length / 4);
+  }
+  if (!Array.isArray(content) || content.length === 0) {
+    return 0;
+  }
+  let totalLength = 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "text" && typeof b.text === "string") {
+      totalLength += b.text.length;
+    } else if (b.type === "thinking" && typeof b.thinking === "string") {
+      totalLength += b.thinking.length;
+    }
+  }
+  return totalLength > 0 ? Math.ceil(totalLength / 4) : 0;
+}
+
 async function scanTranscriptFile(params: {
   filePath: string;
   config?: OpenClawConfig;
   onEntry: (entry: ParsedTranscriptEntry) => void;
 }): Promise<void> {
+  let lastRawTimestamp: number | undefined;
   for await (const parsed of readJsonlRecords(params.filePath)) {
+    const rawTs = toFiniteNumber(
+      (() => {
+        const ts = parsed.timestamp;
+        if (typeof ts === "string") {
+          const d = new Date(ts);
+          return Number.isNaN(d.valueOf()) ? undefined : d.getTime();
+        }
+        return ts;
+      })() ??
+        (() => {
+          const msg = parsed.message as Record<string, unknown> | undefined;
+          return msg?.timestamp;
+        })(),
+    );
     const entry = parseTranscriptEntry(parsed);
     if (!entry) {
+      if (rawTs !== undefined) lastRawTimestamp = rawTs;
       continue;
     }
+    if (entry.role === "assistant" && entry.durationMs === undefined && lastRawTimestamp !== undefined) {
+      const entryTs = entry.timestamp?.getTime() ?? rawTs;
+      if (entryTs !== undefined) {
+        const delta = entryTs - lastRawTimestamp;
+        if (delta > 0 && delta <= 10 * 60 * 1000) {
+          entry.durationMs = delta;
+        }
+      }
+    }
+    if (rawTs !== undefined) lastRawTimestamp = rawTs;
 
-    if (entry.usage && entry.costTotal === undefined) {
+    if (entry.usage && (entry.costTotal === undefined || entry.costTotal === 0)) {
       const cost = resolveModelCostConfig({
         provider: entry.provider,
         model: entry.model,
         config: params.config,
       });
-      entry.costTotal = estimateUsageCost({ usage: entry.usage, cost });
+      // When a provider doesn't return streaming token counts, estimate from response content
+      if (cost && entry.role === "assistant") {
+        const allZero =
+          !entry.usage.input &&
+          !entry.usage.output &&
+          !entry.usage.cacheRead &&
+          !entry.usage.cacheWrite &&
+          !entry.usage.total;
+        if (allZero) {
+          const estimatedTokens = estimateTokensFromContent(entry.message?.content);
+          if (estimatedTokens > 0) {
+            entry.usage = { ...entry.usage, total: estimatedTokens };
+          }
+        }
+      }
+      const estimated = estimateUsageCost({ usage: entry.usage, cost });
+      if (estimated !== undefined && (entry.costTotal === undefined || estimated > 0)) {
+        entry.costTotal = estimated;
+      }
     }
 
     params.onEntry(entry);
@@ -449,6 +513,56 @@ export async function loadCostUsageSummary(params?: {
 }
 
 /**
+ * Returns total estimated cost (USD) per provider for a time window.
+ * Used to check manual cost quota limits for @auto model routing.
+ */
+export async function loadProviderCostUsed(params?: {
+  startMs?: number;
+  endMs?: number;
+  config?: OpenClawConfig;
+  agentId?: string;
+}): Promise<Map<string, number>> {
+  const now = Date.now();
+  const sinceTime = params?.startMs ?? now - 30 * 24 * 60 * 60 * 1000;
+  const untilTime = params?.endMs ?? now;
+  const costPerProvider = new Map<string, number>();
+
+  const sessionsDir = resolveSessionTranscriptsDirForAgent(params?.agentId);
+  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+  const files = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && isUsageCountedSessionTranscriptFileName(entry.name))
+        .map(async (entry) => {
+          const filePath = path.join(sessionsDir, entry.name);
+          const stats = await fs.promises.stat(filePath).catch(() => null);
+          if (!stats || stats.mtimeMs < sinceTime) return null;
+          return filePath;
+        }),
+    )
+  ).filter((filePath): filePath is string => Boolean(filePath));
+
+  for (const filePath of files) {
+    await scanUsageFile({
+      filePath,
+      config: params?.config,
+      onEntry: (entry) => {
+        const ts = entry.timestamp?.getTime();
+        if (!ts || ts < sinceTime || ts > untilTime) return;
+        const provider = entry.provider?.trim().toLowerCase();
+        if (!provider) return;
+        const cost = entry.costTotal ?? entry.costBreakdown?.total ?? 0;
+        if (cost > 0) {
+          costPerProvider.set(provider, (costPerProvider.get(provider) ?? 0) + cost);
+        }
+      },
+    });
+  }
+
+  return costPerProvider;
+}
+
+/**
  * Scan all transcript files to discover sessions not in the session store.
  * Returns basic metadata for each discovered session.
  */
@@ -584,7 +698,6 @@ export async function loadSessionCostSummary(params: {
   const modelLatencySamples = new Map<string, number[]>();
   const errorStopReasons = new Set(["error", "aborted", "timeout"]);
   const latencyValues: number[] = [];
-  let lastUserTimestamp: number | undefined;
   const MAX_LATENCY_MS = 12 * 60 * 60 * 1000;
 
   await scanTranscriptFile({
@@ -613,18 +726,13 @@ export async function loadSessionCostSummary(params: {
       if (entry.role === "user") {
         messageCounts.user += 1;
         messageCounts.total += 1;
-        if (entry.timestamp) {
-          lastUserTimestamp = entry.timestamp.getTime();
-        }
       }
       if (entry.role === "assistant") {
         messageCounts.assistant += 1;
         messageCounts.total += 1;
         const ts = entry.timestamp?.getTime();
         if (ts !== undefined) {
-          const latencyMs =
-            entry.durationMs ??
-            (lastUserTimestamp !== undefined ? Math.max(0, ts - lastUserTimestamp) : undefined);
+          const latencyMs = entry.durationMs;
           if (
             latencyMs !== undefined &&
             Number.isFinite(latencyMs) &&
